@@ -42,7 +42,8 @@ This Arduino project monitors air quality using a gas sensor (MQ series), DHT11 
 - Adjust `sensorThreshold` if needed for your MQ sensor.
 
 ## 📸 Demo
-(You can add a screenshot of your OLED display or Blynk dashboard here)
+![Uploading WhatsApp Image 2025-05-29 at 17.19.33_8047c22e.jpg…]()
+
 
 ## 📄 License
 MIT
