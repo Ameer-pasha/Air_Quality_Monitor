@@ -41,9 +41,5 @@ This Arduino project monitors air quality using a gas sensor (MQ series), DHT11 
 - Replace WiFi credentials and Blynk Auth Token.
 - Adjust `sensorThreshold` if needed for your MQ sensor.
 
-## 📸 Demo
-![Uploading WhatsApp Image 2025-05-29 at 17.19.33_8047c22e.jpg…]()
-
-
 ## 📄 License
 MIT
