@@ -1,0 +1,373 @@
+#define BLYNK_TEMPLATE_NAME "Air Quality Monitoring"
+#define BLYNK_AUTH_TOKEN "s................."
+#define BLYNK_TEMPLATE_ID "TMP.........."
+
+#define BLYNK_PRINT Serial
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <DHT.h>
+#include <Wire.h>
+
+// OLED Libraries
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+char auth[] = ".......";
+char ssid[] = ".....";
+char pass[] = "....";
+
+BlynkTimer timer;
+
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+int gas = A0;
+int sensorThreshold = 600;
+
+float temperature = 0.0;
+float humidity = 0.0;
+int gasValue = 0;
+
+int oledPage = 0;
+bool wifiConnected = false;
+bool blynkConnected = false;
+bool oledWorking = false;
+bool dhtWorking = false;
+
+unsigned long lastSensorRead = 0;
+unsigned long lastOledUpdate = 0;
+
+// Function to scan I2C devices
+void scanI2C() {
+  Serial.println("Scanning I2C devices...");
+  Wire.begin();
+  byte count = 0;
+  
+  for (byte i = 8; i < 120; i++) {
+    Wire.beginTransmission(i);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("Found I2C device at address 0x");
+      if (i < 16) Serial.print("0");
+      Serial.println(i, HEX);
+      count++;
+    }
+  }
+  
+  if (count == 0) {
+    Serial.println("No I2C devices found!");
+  } else {
+    Serial.print("Found ");
+    Serial.print(count);
+    Serial.println(" I2C device(s)");
+  }
+}
+
+void updateSensorReadings() {
+  Serial.println("=== Reading Sensors ===");
+  
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+  gasValue = analogRead(gas);
+
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("ERROR: Failed to read from DHT sensor!");
+    dhtWorking = false;
+    
+    if (oledWorking) {
+      display.clearDisplay();
+      display.setTextSize(2);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0, 0);
+      display.println("DHT ERROR!");
+      display.setTextSize(1);
+      display.setCursor(0, 25);
+      display.println("Check connections:");
+      display.println("VCC -> 3.3V");
+      display.println("GND -> GND");
+      display.println("DATA -> GPIO2");
+      display.display();
+    }
+    return;
+  }
+
+  dhtWorking = true;
+  lastSensorRead = millis();
+
+  Serial.print("Temperature: "); Serial.print(temperature, 1); Serial.println(" °C");
+  Serial.print("Humidity: "); Serial.print(humidity, 1); Serial.println(" %");
+  Serial.print("Gas Value: "); Serial.println(gasValue);
+
+  // Send to Blynk only if connected
+  if (blynkConnected) {
+    Blynk.virtualWrite(V0, temperature);
+    Blynk.virtualWrite(V1, humidity);
+    Blynk.virtualWrite(V2, gasValue);
+    Serial.println("Data sent to Blynk successfully");
+
+    if (gasValue >= sensorThreshold) {
+      Blynk.logEvent("pollution_alert", "Bad Air Detected!");
+      Serial.println("Pollution alert sent to Blynk");
+    }
+  } else {
+    Serial.println("Blynk not connected - data not sent");
+  }
+}
+
+void updateOLED() {
+  if (!oledWorking) return;
+  
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  
+  switch (oledPage) {
+    case 0: // Temperature Page
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println("TEMP");
+      
+      if (dhtWorking) {
+        display.setTextSize(3);
+        display.setCursor(0, 20);
+        display.print(temperature, 1);
+        display.setTextSize(2);
+        display.println(" C");
+      } else {
+        display.setTextSize(2);
+        display.setCursor(0, 25);
+        display.println("ERROR");
+      }
+      
+      // Status indicators
+      display.setTextSize(1);
+      display.setCursor(0, 55);
+      display.print("WiFi:");
+      display.print(wifiConnected ? "OK" : "NO");
+      display.print(" Blynk:");
+      display.print(blynkConnected ? "OK" : "NO");
+      break;
+
+    case 1: // Humidity Page
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println("HUMIDITY");
+      
+      if (dhtWorking) {
+        display.setTextSize(3);
+        display.setCursor(0, 20);
+        display.print(humidity, 1);
+        display.setTextSize(2);
+        display.println(" %");
+      } else {
+        display.setTextSize(2);
+        display.setCursor(0, 25);
+        display.println("ERROR");
+      }
+      
+      // Time since last reading
+      display.setTextSize(1);
+      display.setCursor(0, 55);
+      if (lastSensorRead > 0) {
+        display.print("Updated: ");
+        display.print((millis() - lastSensorRead) / 1000);
+        display.print("s ago");
+      }
+      break;
+
+    case 2: // Gas Sensor Page
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println("AIR QUALITY");
+      
+      display.setTextSize(2);
+      display.setCursor(0, 20);
+      display.print("Gas: ");
+      display.println(gasValue);
+      
+      display.setCursor(0, 40);
+      if (gasValue < sensorThreshold) {
+        display.println("GOOD AIR");
+      } else {
+        display.println("BAD AIR!");
+      }
+      
+      // Threshold indicator
+      display.setTextSize(1);
+      display.setCursor(0, 55);
+      display.print("Threshold: ");
+      display.print(sensorThreshold);
+      break;
+
+    case 3: // System Status Page
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.println("SYSTEM STATUS");
+      
+      display.setCursor(0, 15);
+      display.print("WiFi: ");
+      display.println(wifiConnected ? "Connected" : "Disconnected");
+      
+      display.setCursor(0, 25);
+      display.print("Blynk: ");
+      display.println(blynkConnected ? "Online" : "Offline");
+      
+      display.setCursor(0, 35);
+      display.print("DHT11: ");
+      display.println(dhtWorking ? "Working" : "Error");
+      
+      display.setCursor(0, 45);
+      display.print("OLED: Working");
+      
+      display.setCursor(0, 55);
+      display.print("Uptime: ");
+      display.print(millis() / 1000);
+      display.print("s");
+      break;
+  }
+
+  display.display();
+  lastOledUpdate = millis();
+  oledPage = (oledPage + 1) % 4; // Cycle through 4 pages now
+}
+
+// Blynk connection callbacks
+BLYNK_CONNECTED() {
+  Serial.println("*** Blynk Connected! ***");
+  blynkConnected = true;
+}
+
+BLYNK_DISCONNECTED() {
+  Serial.println("*** Blynk Disconnected! ***");
+  blynkConnected = false;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println();
+  Serial.println("=== Air Quality Monitor with OLED Starting ===");
+  
+  pinMode(gas, INPUT);
+  
+  // Test I2C devices
+  scanI2C();
+  
+  // Initialize OLED
+  Serial.println("Initializing OLED display...");
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("ERROR: SSD1306 allocation failed!");
+    Serial.println("Check OLED connections:");
+    Serial.println("VCC -> 3.3V, GND -> GND, SDA -> D2(GPIO4), SCL -> D1(GPIO5)");
+    // Continue without OLED
+    oledWorking = false;
+  } else {
+    Serial.println("OLED initialized successfully");
+    oledWorking = true;
+    
+    // Show startup screen
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 15);
+    display.println("Air Quality");
+    display.setCursor(25, 35);
+    display.println("Monitor");
+    display.setTextSize(1);
+    display.setCursor(30, 55);
+    display.println("Starting...");
+    display.display();
+    delay(2000);
+  }
+  
+  // Initialize DHT sensor
+  Serial.println("Initializing DHT11 sensor...");
+  dht.begin();
+  delay(2000); // Give DHT sensor time to stabilize
+  
+  // Test DHT sensor
+  float testTemp = dht.readTemperature();
+  float testHum = dht.readHumidity();
+  if (isnan(testTemp) || isnan(testHum)) {
+    Serial.println("WARNING: DHT11 not responding properly!");
+    dhtWorking = false;
+  } else {
+    Serial.print("DHT11 test OK - Temp: ");
+    Serial.print(testTemp, 1);
+    Serial.print("°C, Humidity: ");
+    Serial.print(testHum, 1);
+    Serial.println("%");
+    dhtWorking = true;
+  }
+  
+  // Connect to WiFi and Blynk
+  Serial.println("Connecting to WiFi and Blynk...");
+  if (oledWorking) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("Connecting to WiFi...");
+    display.print("Network: ");
+    display.println(ssid);
+    display.display();
+  }
+  
+  Blynk.begin(auth, ssid, pass);
+  
+  // Check WiFi connection
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("WiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    
+    if (oledWorking) {
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.println("WiFi Connected!");
+      display.print("IP: ");
+      display.println(WiFi.localIP());
+      display.println("Connecting to Blynk...");
+      display.display();
+      delay(2000);
+    }
+  } else {
+    wifiConnected = false;
+    Serial.println("WiFi connection failed!");
+  }
+  
+  // Set up timers
+  timer.setInterval(30000L, updateSensorReadings); // Read sensors every 30 seconds
+  timer.setInterval(4000L, updateOLED);            // Update OLED every 4 seconds
+  
+  Serial.println("=== Setup Complete ===");
+  Serial.println("Starting main loop...");
+  
+  // Initial readings
+  updateSensorReadings();
+  if (oledWorking) {
+    display.clearDisplay();
+    updateOLED();
+  }
+}
+
+void loop() {
+  if (wifiConnected) {
+    Blynk.run();
+  }
+  timer.run();
+  
+  // Monitor WiFi connection
+  if (WiFi.status() != WL_CONNECTED && wifiConnected) {
+    wifiConnected = false;
+    Serial.println("WiFi connection lost!");
+  } else if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
+    wifiConnected = true;
+    Serial.println("WiFi connection restored!");
+  }
+}
